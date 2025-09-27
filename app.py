@@ -5,51 +5,118 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import japanize_matplotlib
 
-# --- アプリのUI部分 ---
-st.title('相関ネットワーク分析アプリ 📊')
-st.write("UIは表示されますか？") # 目印1
+# --- 関数定義 ---
 
+def create_correlation_network(df, threshold):
+    """
+    DataFrameから相関ネットワークグラフを生成する関数
+    """
+    # 数値データのみを抽出
+    numeric_df = df.select_dtypes(include=np.number)
+    
+    # 相関行列を計算
+    corr_matrix = numeric_df.corr()
+    
+    # グラフオブジェクトを生成
+    G = nx.Graph()
+    
+    # 相関行列からエッジを追加
+    for i in range(len(corr_matrix.columns)):
+        for j in range(i):
+            corr_value = corr_matrix.iloc[i, j]
+            if abs(corr_value) > threshold:
+                # 正の相関か負の相関かを 'sign' として追加
+                G.add_edge(corr_matrix.columns[i], corr_matrix.columns[j], 
+                           weight=abs(corr_value), 
+                           sign=np.sign(corr_value))
+    return G
+
+def draw_graph(G, threshold):
+    """
+    NetworkXグラフオブジェクトを描画し、matplotlibのfigureを返す関数
+    """
+    if not G or not G.nodes():
+        st.warning("閾値を超える相関が見つかりませんでした。閾値を下げてみてください。")
+        return None
+
+    # グラフの描画設定
+    fig, ax = plt.subplots(figsize=(16, 16))
+    pos = nx.spring_layout(G, k=0.8, seed=42) # ノードの配置を計算
+    
+    # エッジ（線）の太さと色を決定
+    weights = [G[u][v]['weight'] * 5 for u, v in G.edges()]
+    edge_colors = ['red' if G[u][v]['sign'] > 0 else 'blue' for u, v in G.edges()]
+    
+    # グラフの描画
+    nx.draw_networkx(
+        G, pos, ax=ax,
+        with_labels=True, 
+        node_color='skyblue', 
+        node_size=3000, 
+        font_size=14,
+        font_family='IPAexGothic', 
+        width=weights, 
+        edge_color=edge_colors
+    )
+    
+    # タイトルと凡例
+    ax.set_title(f'相関ネットワーク (閾値: {threshold:.2f})', fontsize=20)
+    ax.text(0.01, 0.01, '赤線: 正の相関 / 青線: 負の相関', transform=ax.transAxes, fontsize=14, verticalalignment='bottom')
+    
+    return fig
+
+# --- Streamlit アプリケーションのUI部分 ---
+
+# ページの基本設定
+st.set_page_config(layout="wide") 
+st.title('相関ネットワーク分析アプリ 📊')
+st.write('CSVファイルをアップロードすると、データ間の相関関係をネットワークグラフとして可視化します。')
+
+# サイドバーに設定項目をまとめる
+st.sidebar.header('⚙️ 設定')
+
+# 1. ファイルアップローダー
 uploaded_file = st.sidebar.file_uploader(
-    "CSVファイルをアップロードしてください", type='csv'
+    "分析したいCSVファイルをアップロード", type='csv'
 )
-st.write("ファイルアップローダーは表示されますか？") # 目印2
+
+# 2. 相関の閾値を決めるスライダー
+correlation_threshold = st.sidebar.slider(
+    'グラフに表示する相関の閾値',
+    min_value=0.1, max_value=1.0, value=0.5, step=0.05
+)
 
 # --- メイン処理 ---
+
 if uploaded_file is not None:
-    st.write("ファイルがアップロードされました。") # 目印3
-    
     try:
         df = pd.read_csv(uploaded_file)
-        st.write("✅ CSVの読み込みに成功") # 目印4
+        
+        st.subheader('読み込みデータ（先頭5行）')
         st.dataframe(df.head())
 
-        # 数値データがあるか確認
+        # 分析可能な数値列があるかチェック
         numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
         if len(numeric_cols) < 2:
-            st.error("エラー: 分析可能な数値データ列が2つ未満です。")
+            st.error("エラー: 分析可能な数値データ列が2つ以上ありません。CSVファイルを確認してください。")
         else:
-            st.write(f"✅ 分析対象の数値データ列: {numeric_cols}") # 目印5
-
-            if st.button('グラフ生成開始！', type="primary"):
-                st.write("グラフ生成ボタンが押されました。") # 目印6
-                
-                # 相関計算
-                corr_matrix = df[numeric_cols].corr()
-                st.write("✅ 相関行列の計算に成功") # 目印7
-
-                # グラフ描画
-                fig, ax = plt.subplots(figsize=(16, 16))
-                st.write("✅ グラフ描画の準備完了 (subplots)") # 目印8
-                
-                # ここに本来の描画処理が入るが、今は省略して表示テスト
-                ax.set_title("テストグラフ")
-                ax.plot([0, 1], [0, 1]) # 簡単なテスト用直線をプロット
-                
-                st.pyplot(fig)
-                st.write("✅ st.pyplot()の実行完了") # 目印9
-                st.success("処理が完了しました！")
+            st.info(f"分析対象の数値列: `{'`, `'.join(numeric_cols)}`")
+            
+            # 分析実行ボタン
+            if st.button('相関ネットワークを生成！', type="primary"):
+                with st.spinner('グラフを生成中です...'):
+                    # 1. 相関ネットワークを生成
+                    graph_data = create_correlation_network(df, correlation_threshold)
+                    
+                    # 2. グラフを描画
+                    figure = draw_graph(graph_data, correlation_threshold)
+                    
+                    # 3. Streamlitでグラフを表示
+                    if figure is not None:
+                        st.pyplot(figure)
+                        st.success('グラフが正常に生成されました！')
 
     except Exception as e:
-        st.error(f"処理中にエラーが発生しました: {e}")
+        st.error(f"予期せぬエラーが発生しました: {e}")
 else:
-    st.info('👆 サイドバーからCSVをアップロードしてください。')
+    st.info('👆 サイドバーからCSVファイルをアップロードして分析を開始してください。')
