@@ -4,11 +4,14 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 import japanize_matplotlib
+import io
 
 # --- 関数定義 (ここは変更なし) ---
 
 def create_correlation_network(df, threshold):
     numeric_df = df.select_dtypes(include=np.number)
+    if numeric_df.shape[1] < 2:
+        return None # 分析対象がない場合はNoneを返す
     corr_matrix = numeric_df.corr()
     G = nx.Graph()
     for i in range(len(corr_matrix.columns)):
@@ -35,47 +38,17 @@ def draw_graph(G, threshold):
     ax.text(0.01, 0.01, '赤線: 正の相関 / 青線: 負の相関', transform=ax.transAxes, fontsize=14, verticalalignment='bottom')
     return fig
 
-# --- ▼▼▼ ここから前処理関数を追加 ▼▼▼ ---
-
-def preprocess_data(df, chars_to_remove):
-    """
-    指定された文字を削除し、列を数値に変換する関数
-    """
-    df_processed = df.copy()
-    for col in df_processed.columns:
-        # 列が文字列型の場合のみ処理
-        if df_processed[col].dtype == 'object':
-            # 指定された文字をすべて削除
-            for char in chars_to_remove:
-                df_processed[col] = df_processed[col].str.replace(char, '', regex=False)
-            
-            # 文字列から数値に変換を試みる
-            # 変換できないものはNaN(欠損値)にする
-            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
-            
-    return df_processed
-
 # --- Streamlit アプリケーションのUI部分 ---
 
 st.set_page_config(layout="wide") 
 st.title('相関ネットワーク分析アプリ 📊')
-st.write('CSVファイルをアップロードすると、データ間の相関関係をネットワークグラフとして可視化します。')
+st.write('数値データを含むCSVファイルをアップロードすると、データ間の相関関係をネットワークグラフとして可視化します。')
 
 st.sidebar.header('⚙️ 設定')
 
 uploaded_file = st.sidebar.file_uploader(
     "分析したいCSVファイルをアップロード", type='csv'
 )
-
-# --- ▼▼▼ ここから前処理のUIを追加 ▼▼▼ ---
-st.sidebar.markdown("---") # 区切り線
-enable_preprocessing = st.sidebar.checkbox('前処理機能を有効にする')
-chars_to_remove_input = ""
-if enable_preprocessing:
-    chars_to_remove_input = st.sidebar.text_input(
-        'データから取り除きたい文字 (カンマ区切りで複数指定可)', 
-        value='円,人,個,$,￥,,' # デフォルト値
-    )
 
 correlation_threshold = st.sidebar.slider(
     'グラフに表示する相関の閾値',
@@ -86,33 +59,38 @@ correlation_threshold = st.sidebar.slider(
 
 if uploaded_file is not None:
     try:
-        df_original = pd.read_csv(uploaded_file)
-        df_to_process = df_original.copy()
-        
-        st.subheader('1. 読み込みデータ（オリジナル）')
-        st.dataframe(df_original.head())
+        df = pd.read_csv(uploaded_file)
+        st.subheader('読み込みデータ（先頭5行）')
+        st.dataframe(df.head())
 
-        # --- ▼▼▼ ここから前処理の実行部分を追加 ▼▼▼ ---
-        if enable_preprocessing:
-            st.subheader('2. 前処理後のデータ')
-            chars_to_remove = [char.strip() for char in chars_to_remove_input.split(',')]
-            df_to_process = preprocess_data(df_original, chars_to_remove)
-            st.dataframe(df_to_process.head())
-        
-        # 分析可能な数値列があるかチェック
-        numeric_cols = df_to_process.select_dtypes(include=np.number).columns.tolist()
+        numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
         if len(numeric_cols) < 2:
-            st.error("エラー: 分析可能な数値データ列が2つ以上ありません。前処理の設定やCSVファイルを確認してください。")
+            st.error("エラー: 分析可能な数値データ列が2つ以上ありません。CSVファイルを確認してください。")
         else:
             st.info(f"分析対象の数値列: `{'`, `'.join(numeric_cols)}`")
             
             if st.button('相関ネットワークを生成！', type="primary"):
                 with st.spinner('グラフを生成中です...'):
-                    graph_data = create_correlation_network(df_to_process, correlation_threshold)
+                    graph_data = create_correlation_network(df, correlation_threshold)
                     figure = draw_graph(graph_data, correlation_threshold)
+                    
                     if figure is not None:
                         st.pyplot(figure)
                         st.success('グラフが正常に生成されました！')
+                        
+                        # --- ▼▼▼ ここからダウンロード機能 ▼▼▼ ---
+                        
+                        # グラフをメモリ上のバイナリデータとして保存
+                        buf = io.BytesIO()
+                        figure.savefig(buf, format="png", bbox_inches='tight')
+                        
+                        # ダウンロードボタンを設置
+                        st.download_button(
+                            label="グラフをPNG形式でダウンロード",
+                            data=buf,
+                            file_name="correlation_network.png",
+                            mime="image/png"
+                        )
 
     except Exception as e:
         st.error(f"予期せぬエラーが発生しました: {e}")
